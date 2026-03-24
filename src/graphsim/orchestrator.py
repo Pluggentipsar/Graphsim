@@ -12,10 +12,13 @@ from rich.panel import Panel
 from graphsim.agents.base import AgentContext, BaseAgent
 from graphsim.agents.registry import AgentRegistry
 from graphsim.config import LLMProvider, SimulationConfig
+from graphsim.engine.events import EventManager
 from graphsim.engine.scenario import ScenarioConfig, load_scenario
+from graphsim.engine.scoping import InformationScope
 from graphsim.engine.state import AgentMessage, SimulationState
+from graphsim.engine.templates import EventTrigger
 from graphsim.graph.models import EdgeType, GraphEdge, GraphNode, NodeType
-from graphsim.graph.queries import find_active_agents_for_case, find_collaborators
+from graphsim.graph.queries import find_collaborators
 from graphsim.graph.store import GraphStore
 
 console = Console()
@@ -34,6 +37,8 @@ class Orchestrator:
         self.registry: AgentRegistry | None = None
         self.graph: GraphStore = GraphStore()
         self.state: SimulationState | None = None
+        self.event_manager: EventManager = EventManager()
+        self._scope: InformationScope | None = None
         self._llm: Any = None
 
     def _get_llm(self) -> Any:
@@ -59,6 +64,9 @@ class Orchestrator:
         # Build graph from scenario
         self._build_graph(scenario)
 
+        # Initialize information scoping
+        self._scope = InformationScope(self.graph)
+
         # Initialize state
         self.state = SimulationState(
             scenario_id=scenario.scenario_id,
@@ -72,9 +80,18 @@ class Orchestrator:
             },
         )
 
+    def schedule_events(self, events: list[EventTrigger]) -> None:
+        """Schedule events for the simulation."""
+        self.event_manager.schedule_many(events)
+
+    def inject_event(self, event: EventTrigger) -> None:
+        """Inject an event into the current round immediately."""
+        if not self.state:
+            raise RuntimeError("No simulation state loaded")
+        self.event_manager.inject_now(self.state, event)
+
     def _build_graph(self, scenario: ScenarioConfig) -> None:
         """Build the graph from a scenario configuration."""
-        # Add agent nodes
         for agent_config in scenario.agents:
             self.graph.add_node(GraphNode(
                 node_id=agent_config.role_id,
@@ -85,7 +102,6 @@ class Orchestrator:
                 },
             ))
 
-        # Add relationships
         for rel in scenario.relationships:
             self.graph.add_edge(GraphEdge(
                 source_id=rel.source,
@@ -95,28 +111,33 @@ class Orchestrator:
             ))
 
     def _select_active_agents(self, round_number: int) -> list[str]:
-        """Select which agents should be active this round.
-
-        For MVP: all agents are active every round.
-        Future: graph-based activation based on events and relevance.
-        """
+        """Select which agents should be active this round."""
         if not self.state:
             return []
 
-        # For round 0, activate all agents
+        # Round 0: all agents
         if round_number == 0:
             return self.state.active_agent_ids
 
-        # For subsequent rounds, find agents affected by recent messages
+        # Find agents affected by recent messages and events
         recent_messages = [
             m for m in self.state.messages if m.round_number == round_number - 1
         ]
         active = set()
         for msg in recent_messages:
-            # The sender and their collaborators are active
+            if msg.agent_id == "system":
+                # Event messages: activate affected agents
+                if msg.visible_to:
+                    active.update(msg.visible_to)
+                continue
             active.add(msg.agent_id)
             for collab_id in find_collaborators(self.graph, msg.agent_id):
                 active.add(collab_id)
+
+        # Check for events in this round that should wake agents
+        upcoming = self.event_manager.get_events_for_round(round_number)
+        for event in upcoming:
+            active.update(event.affects_agents)
 
         # Always include agents with pending decisions
         if self.state.pending_actions:
@@ -131,7 +152,20 @@ class Orchestrator:
         if not self.state:
             raise RuntimeError("No simulation state loaded")
 
-        visible_messages = self.state.messages_visible_to(agent.agent_id)
+        # Use information scoping if available
+        if self._scope:
+            agent_node = self.graph.get_node(agent.agent_id)
+            info_level = (
+                agent_node.properties.get("information_level", "medium")
+                if agent_node
+                else "medium"
+            )
+            visible_messages = self._scope.get_visible_messages(
+                agent.agent_id, self.state, info_level
+            )
+        else:
+            visible_messages = self.state.messages_visible_to(agent.agent_id)
+
         relationships = self.graph.get_relationships_for_agent(agent.agent_id)
 
         pending = []
@@ -144,6 +178,12 @@ class Orchestrator:
                 f"{self.state.metadata.get('description', '')}\n\n"
                 f"Händelse: {self.state.metadata.get('initial_event', '')}"
             )
+
+        # Add secrecy rules to context
+        if self._scope:
+            secrecy_prompt = self._scope.get_secrecy_prompt(agent.agent_id)
+            if secrecy_prompt:
+                scenario_context += f"\n\n{secrecy_prompt}"
 
         return AgentContext(
             round_number=round_number,
@@ -164,6 +204,14 @@ class Orchestrator:
         """Execute a single simulation round."""
         if not self.state or not self.registry:
             raise RuntimeError("Simulation not loaded")
+
+        # Process scheduled events for this round
+        event_outcomes = self.event_manager.process_round(self.state, round_number)
+        if event_outcomes and self.config.verbose:
+            for outcome in event_outcomes:
+                console.print(
+                    f"  [bold yellow]HÄNDELSE:[/bold yellow] {outcome.event.description}"
+                )
 
         active_ids = self._select_active_agents(round_number)
         agents = self.registry.get_by_ids(active_ids)

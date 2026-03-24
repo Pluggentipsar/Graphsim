@@ -108,3 +108,57 @@ class SimulationResultResponse(BaseModel):
     total_rounds: int
     messages: list[MessageResponse]
     analysis: dict[str, Any] | None = None
+
+
+# ============================================================================
+# Templates
+# ============================================================================
+
+class ScenarioTemplateResponse(BaseModel):
+    template_id: str
+    title: str
+    domain: str
+    description: str
+    suggested_roles: list[str]
+    decision_points: list[str]
+    tags: list[str]
+    difficulty: str
+    estimated_rounds: int
+    num_events: int
+
+
+# ============================================================================
+# Events
+# ============================================================================
+
+class InjectEventRequest(BaseModel):
+    description: str
+    affects_agents: list[str] = Field(default_factory=list)
+    new_information: dict[str, str] = Field(default_factory=dict)
+
+
+# ============================================================================
+# Comparison
+# ============================================================================
+
+class VariantConfigRequest(BaseModel):
+    variant_id: str
+    label: str
+    description: str = ""
+    trait_overrides: dict[str, dict[str, float]] = Field(default_factory=dict)
+    personality_overrides: dict[str, str] = Field(default_factory=dict)
+
+
+class RunComparisonRequest(BaseModel):
+    scenario_yaml_path: str | None = None
+    scenario_config: dict[str, Any] | None = None
+    template_id: str | None = None
+    variants: list[VariantConfigRequest]
+
+
+# ============================================================================
+# Export
+# ============================================================================
+
+class ExportRequest(BaseModel):
+    format: str = "markdown"  # markdown, json

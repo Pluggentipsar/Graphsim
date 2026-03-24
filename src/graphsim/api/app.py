@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 
 from graphsim.agents.roles.library import (
     ALL_ROLES,
@@ -17,21 +18,35 @@ from graphsim.agents.roles.library import (
 )
 from graphsim.agents.traits import TRAIT_DEFINITIONS, TraitProfile
 from graphsim.analysis.analyzer import SimulationAnalyzer
+from graphsim.analysis.export import ReportExporter
 from graphsim.api.models import (
     BuildScenarioRequest,
     CreateSimulationRequest,
     DomainResponse,
+    ExportRequest,
+    InjectEventRequest,
     MessageResponse,
     RoleTemplateResponse,
+    RunComparisonRequest,
+    ScenarioTemplateResponse,
     SimulationResultResponse,
     SimulationStatusResponse,
     SuggestRolesRequest,
     TraitDefinitionResponse,
     TraitPresetResponse,
+    VariantConfigRequest,
 )
 from graphsim.config import SimulationConfig
 from graphsim.engine.builder import ScenarioBuilder
-from graphsim.engine.scenario import ScenarioConfig
+from graphsim.engine.comparison import ComparisonRunner, VariantConfig
+from graphsim.engine.scenario import ScenarioConfig, load_scenario
+from graphsim.engine.templates import (
+    ALL_TEMPLATES,
+    EventTrigger,
+    TEMPLATES_BY_DOMAIN,
+    get_template,
+    search_templates,
+)
 from graphsim.orchestrator import Orchestrator
 
 app = FastAPI(
@@ -369,3 +384,261 @@ async def analyze_simulation(sim_id: str):
         return result.model_dump()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+# ============================================================================
+# Scenario Template Endpoints
+# ============================================================================
+
+@app.get("/api/templates", response_model=list[ScenarioTemplateResponse])
+async def list_templates(domain: str | None = None, query: str | None = None):
+    """List available scenario templates."""
+    if query:
+        templates = search_templates(query)
+    elif domain:
+        templates = TEMPLATES_BY_DOMAIN.get(domain, [])
+    else:
+        templates = ALL_TEMPLATES
+    return [
+        ScenarioTemplateResponse(
+            template_id=t.template_id,
+            title=t.title,
+            domain=t.domain,
+            description=t.description,
+            suggested_roles=t.suggested_roles,
+            decision_points=t.decision_points,
+            tags=t.tags,
+            difficulty=t.difficulty,
+            estimated_rounds=t.estimated_rounds,
+            num_events=len(t.events),
+        )
+        for t in templates
+    ]
+
+
+@app.get("/api/templates/{template_id}")
+async def get_template_detail(template_id: str):
+    """Get full details for a scenario template including events."""
+    template = get_template(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail=f"Template '{template_id}' not found")
+    return template.model_dump()
+
+
+@app.post("/api/simulations/from-template", response_model=SimulationStatusResponse)
+async def create_simulation_from_template(
+    template_id: str,
+    num_rounds: int | None = None,
+):
+    """Create a simulation from a pre-built template, including its events."""
+    template = get_template(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail=f"Template '{template_id}' not found")
+
+    # Build a ScenarioConfig from the template using the role library
+    from graphsim.agents.roles.library import get_role as get_library_role
+
+    agents = []
+    for role_id in template.suggested_roles:
+        role = get_library_role(role_id)
+        if role:
+            agents.append(role.to_agent_config())
+
+    relationships = []
+    from graphsim.engine.scenario import RelationshipConfig
+    for rel in template.suggested_relationships:
+        relationships.append(RelationshipConfig(
+            source=rel["source"],
+            target=rel["target"],
+            relation_type=rel["type"],
+        ))
+
+    scenario = ScenarioConfig(
+        scenario_id=template.template_id,
+        title=template.title,
+        description=template.description,
+        context=template.context,
+        initial_event=template.initial_event,
+        agents=agents,
+        relationships=relationships,
+        decision_points=template.decision_points,
+        max_rounds=num_rounds or template.estimated_rounds,
+    )
+
+    sim_id = str(uuid.uuid4())[:8]
+    config = SimulationConfig()
+    orchestrator = Orchestrator(config)
+    orchestrator.load_scenario(scenario)
+
+    # Schedule template events
+    if template.events:
+        orchestrator.schedule_events(template.events)
+
+    _simulations[sim_id] = {
+        "orchestrator": orchestrator,
+        "status": "created",
+    }
+
+    state = orchestrator.state
+    return SimulationStatusResponse(
+        simulation_id=sim_id,
+        status="created",
+        current_round=state.current_round,
+        max_rounds=state.max_rounds,
+        num_agents=len(state.active_agent_ids),
+        num_messages=len(state.messages),
+        scenario_title=state.metadata.get("title", ""),
+    )
+
+
+# ============================================================================
+# Event Injection Endpoints
+# ============================================================================
+
+@app.post("/api/simulations/{sim_id}/events")
+async def inject_event(sim_id: str, request: InjectEventRequest):
+    """Inject an event into the current round of a simulation."""
+    if sim_id not in _simulations:
+        raise HTTPException(status_code=404, detail="Simulation not found")
+
+    orchestrator: Orchestrator = _simulations[sim_id]["orchestrator"]
+    state = orchestrator.state
+
+    event = EventTrigger(
+        round_number=state.current_round,
+        description=request.description,
+        affects_agents=request.affects_agents,
+        new_information=request.new_information,
+    )
+
+    orchestrator.inject_event(event)
+    return {"status": "injected", "round": state.current_round}
+
+
+@app.get("/api/simulations/{sim_id}/events")
+async def list_simulation_events(sim_id: str):
+    """List all pending and processed events for a simulation."""
+    if sim_id not in _simulations:
+        raise HTTPException(status_code=404, detail="Simulation not found")
+
+    orchestrator: Orchestrator = _simulations[sim_id]["orchestrator"]
+    return {
+        "pending": [e.model_dump() for e in orchestrator.event_manager.pending_events],
+        "processed": [
+            {
+                "event": o.event.model_dump(),
+                "messages_injected": o.messages_injected,
+                "agents_notified": o.agents_notified,
+            }
+            for o in orchestrator.event_manager.processed_events
+        ],
+    }
+
+
+# ============================================================================
+# Comparison Endpoints
+# ============================================================================
+
+@app.post("/api/comparisons/run")
+async def run_comparison(request: RunComparisonRequest):
+    """Run the same scenario with different configurations and compare."""
+    # Load base scenario
+    if request.scenario_yaml_path:
+        scenario = load_scenario(request.scenario_yaml_path)
+    elif request.scenario_config:
+        scenario = ScenarioConfig(**request.scenario_config)
+    elif request.template_id:
+        template = get_template(request.template_id)
+        if not template:
+            raise HTTPException(status_code=404, detail=f"Template '{request.template_id}' not found")
+        from graphsim.agents.roles.library import get_role as get_library_role
+        from graphsim.engine.scenario import RelationshipConfig
+
+        agents = []
+        for role_id in template.suggested_roles:
+            role = get_library_role(role_id)
+            if role:
+                agents.append(role.to_agent_config())
+        relationships = [
+            RelationshipConfig(source=r["source"], target=r["target"], relation_type=r["type"])
+            for r in template.suggested_relationships
+        ]
+        scenario = ScenarioConfig(
+            scenario_id=template.template_id,
+            title=template.title,
+            description=template.description,
+            context=template.context,
+            initial_event=template.initial_event,
+            agents=agents,
+            relationships=relationships,
+            decision_points=template.decision_points,
+            max_rounds=template.estimated_rounds,
+        )
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide scenario_yaml_path, scenario_config, or template_id",
+        )
+
+    variants = [
+        VariantConfig(
+            variant_id=v.variant_id,
+            label=v.label,
+            description=v.description,
+            trait_overrides=v.trait_overrides,
+            personality_overrides=v.personality_overrides,
+        )
+        for v in request.variants
+    ]
+
+    try:
+        runner = ComparisonRunner()
+        result = await runner.run_comparison(scenario, variants)
+
+        return {
+            "scenario_title": result.scenario_title,
+            "num_variants": len(result.variants),
+            "variants": [
+                {
+                    "variant_id": v.variant_id,
+                    "label": v.label,
+                    "total_rounds": v.state.current_round + 1,
+                    "total_messages": len(v.state.messages),
+                    "analysis": v.analysis.model_dump() if v.analysis else None,
+                }
+                for v in result.variants
+            ],
+            "comparison_summary": result.comparison_summary,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Comparison failed: {str(e)}")
+
+
+# ============================================================================
+# Export Endpoints
+# ============================================================================
+
+@app.post("/api/simulations/{sim_id}/export")
+async def export_simulation(sim_id: str, request: ExportRequest):
+    """Export simulation results as Markdown or JSON report."""
+    if sim_id not in _simulations:
+        raise HTTPException(status_code=404, detail="Simulation not found")
+
+    sim = _simulations[sim_id]
+    orchestrator: Orchestrator = sim["orchestrator"]
+    state = orchestrator.state
+    exporter = ReportExporter()
+
+    # Try to get existing analysis
+    analysis = None
+    if sim.get("analysis"):
+        analysis = sim["analysis"]
+
+    if request.format == "markdown":
+        content = exporter.to_markdown(state, analysis)
+        return PlainTextResponse(content=content, media_type="text/markdown")
+    elif request.format == "json":
+        content = exporter.to_json(state, analysis)
+        return PlainTextResponse(content=content, media_type="application/json")
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported format: {request.format}")

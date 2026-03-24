@@ -92,3 +92,113 @@ def test_create_simulation_with_yaml():
 def test_create_simulation_no_input():
     response = client.post("/api/simulations", json={})
     assert response.status_code == 400
+
+
+# ============================================================================
+# Template endpoints
+# ============================================================================
+
+def test_list_templates():
+    response = client.get("/api/templates")
+    assert response.status_code == 200
+    templates = response.json()
+    assert len(templates) >= 8
+    assert all("template_id" in t for t in templates)
+
+
+def test_list_templates_by_domain():
+    response = client.get("/api/templates?domain=skola")
+    assert response.status_code == 200
+    templates = response.json()
+    assert len(templates) >= 3
+    assert all(t["domain"] == "skola" for t in templates)
+
+
+def test_get_template_detail():
+    response = client.get("/api/templates/school_absence")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["template_id"] == "school_absence"
+    assert "events" in data
+    assert len(data["events"]) >= 2
+
+
+def test_get_template_not_found():
+    response = client.get("/api/templates/nonexistent")
+    assert response.status_code == 404
+
+
+def test_create_simulation_from_template():
+    response = client.post("/api/simulations/from-template?template_id=school_absence")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "created"
+    assert data["num_agents"] >= 5
+    assert "Elev med hög frånvaro" in data["scenario_title"]
+
+
+def test_create_simulation_from_template_not_found():
+    response = client.post("/api/simulations/from-template?template_id=nonexistent")
+    assert response.status_code == 404
+
+
+# ============================================================================
+# Event endpoints
+# ============================================================================
+
+def test_inject_event():
+    # First create a simulation
+    create_resp = client.post("/api/simulations", json={
+        "scenario_yaml_path": "scenarios/example_school.yaml",
+    })
+    sim_id = create_resp.json()["simulation_id"]
+
+    # Inject event
+    response = client.post(f"/api/simulations/{sim_id}/events", json={
+        "description": "Eleven ringer hem",
+        "affects_agents": ["vardnadshavare"],
+        "new_information": {"vardnadshavare": "Eleven har ringt hem och gråter"},
+    })
+    assert response.status_code == 200
+    assert response.json()["status"] == "injected"
+
+
+def test_list_events():
+    create_resp = client.post("/api/simulations", json={
+        "scenario_yaml_path": "scenarios/example_school.yaml",
+    })
+    sim_id = create_resp.json()["simulation_id"]
+
+    response = client.get(f"/api/simulations/{sim_id}/events")
+    assert response.status_code == 200
+    data = response.json()
+    assert "pending" in data
+    assert "processed" in data
+
+
+# ============================================================================
+# Export endpoints
+# ============================================================================
+
+def test_export_markdown():
+    create_resp = client.post("/api/simulations", json={
+        "scenario_yaml_path": "scenarios/example_school.yaml",
+    })
+    sim_id = create_resp.json()["simulation_id"]
+
+    response = client.post(f"/api/simulations/{sim_id}/export", json={"format": "markdown"})
+    assert response.status_code == 200
+    assert "Simuleringsrapport" in response.text
+
+
+def test_export_json():
+    create_resp = client.post("/api/simulations", json={
+        "scenario_yaml_path": "scenarios/example_school.yaml",
+    })
+    sim_id = create_resp.json()["simulation_id"]
+
+    response = client.post(f"/api/simulations/{sim_id}/export", json={"format": "json"})
+    assert response.status_code == 200
+    import json
+    data = json.loads(response.text)
+    assert "metadata" in data
