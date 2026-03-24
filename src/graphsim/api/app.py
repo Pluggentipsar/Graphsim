@@ -48,6 +48,13 @@ from graphsim.engine.templates import (
     search_templates,
 )
 from graphsim.orchestrator import Orchestrator
+from graphsim.rag.engine import GraphRAGEngine
+from graphsim.rag.extractor import build_knowledge_graph_from_state
+from graphsim.rag.store import KnowledgeStore
+
+# Shared GraphRAG engine and knowledge store
+_knowledge_store = KnowledgeStore()
+_graphrag_engine = GraphRAGEngine(knowledge_store=_knowledge_store)
 
 app = FastAPI(
     title="Graphsim",
@@ -642,3 +649,143 @@ async def export_simulation(sim_id: str, request: ExportRequest):
         return PlainTextResponse(content=content, media_type="application/json")
     else:
         raise HTTPException(status_code=400, detail=f"Unsupported format: {request.format}")
+
+
+# ============================================================================
+# GraphRAG Endpoints
+# ============================================================================
+
+@app.post("/api/simulations/{sim_id}/graphrag/extract")
+async def extract_knowledge_graph(sim_id: str):
+    """Extract a knowledge graph from a simulation's messages."""
+    if sim_id not in _simulations:
+        raise HTTPException(status_code=404, detail="Simulation not found")
+
+    state = _simulations[sim_id]["orchestrator"].state
+    kg = build_knowledge_graph_from_state(state)
+
+    return {
+        "simulation_id": sim_id,
+        "nodes": kg.number_of_nodes(),
+        "edges": kg.number_of_edges(),
+        "graph_stats": _graphrag_engine.analyze_graph_structure(kg),
+    }
+
+
+@app.post("/api/simulations/{sim_id}/graphrag/communities")
+async def detect_communities(sim_id: str, resolution: float = 1.0):
+    """Detect communities in a simulation's knowledge graph."""
+    if sim_id not in _simulations:
+        raise HTTPException(status_code=404, detail="Simulation not found")
+
+    state = _simulations[sim_id]["orchestrator"].state
+    kg = build_knowledge_graph_from_state(state)
+    result = _graphrag_engine.detect_communities(kg, resolution=resolution)
+
+    # Generate local summaries (no LLM needed)
+    from graphsim.rag.communities import CommunityDetector
+    detector = CommunityDetector()
+    result = detector.generate_local_summaries(kg, result)
+
+    return {
+        "simulation_id": sim_id,
+        "total_communities": result.total_communities,
+        "modularity": result.modularity,
+        "communities": [
+            {
+                "community_id": c.community_id,
+                "size": c.size,
+                "summary": c.summary,
+                "key_entities": c.key_entities,
+                "key_relationships": c.key_relationships[:5],
+            }
+            for c in result.communities
+        ],
+    }
+
+
+@app.post("/api/simulations/{sim_id}/graphrag/silos")
+async def detect_silos(sim_id: str):
+    """Detect information silos in a simulation."""
+    if sim_id not in _simulations:
+        raise HTTPException(status_code=404, detail="Simulation not found")
+
+    state = _simulations[sim_id]["orchestrator"].state
+    kg = build_knowledge_graph_from_state(state)
+    communities = _graphrag_engine.detect_communities(kg)
+    silos = _graphrag_engine.find_silos(kg, communities.communities)
+
+    return {
+        "simulation_id": sim_id,
+        "total_silos": len(silos),
+        "silos": silos,
+    }
+
+
+@app.post("/api/simulations/{sim_id}/graphrag/archive")
+async def archive_simulation_graphrag(sim_id: str):
+    """Archive a simulation with its knowledge graph for cross-simulation learning."""
+    if sim_id not in _simulations:
+        raise HTTPException(status_code=404, detail="Simulation not found")
+
+    state = _simulations[sim_id]["orchestrator"].state
+
+    try:
+        archive = await _graphrag_engine.archive_simulation(
+            simulation_id=sim_id,
+            state=state,
+            use_llm_extraction=False,
+            use_llm_summaries=False,
+        )
+        return {
+            "simulation_id": sim_id,
+            "scenario_title": archive.scenario_title,
+            "communities": len(archive.communities),
+            "silos": len(archive.silos),
+            "patterns": archive.key_patterns,
+            "archived": True,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Archival failed: {str(e)}")
+
+
+@app.get("/api/graphrag/archives")
+async def list_archives():
+    """List all archived simulations in the knowledge store."""
+    archives = _knowledge_store.list_archives()
+    return [
+        {
+            "simulation_id": a.simulation_id,
+            "scenario_id": a.scenario_id,
+            "scenario_title": a.scenario_title,
+            "total_rounds": a.total_rounds,
+            "total_messages": a.total_messages,
+            "communities": len(a.communities),
+            "silos": len(a.silos),
+            "patterns": len(a.key_patterns),
+        }
+        for a in archives
+    ]
+
+
+@app.get("/api/graphrag/precedents")
+async def get_precedents(scenario_title: str, max_results: int = 3):
+    """Get precedent context from archived simulations for a new scenario."""
+    precedents = _knowledge_store.get_precedent_context(
+        scenario_title, max_precedents=max_results
+    )
+    return {
+        "scenario_title": scenario_title,
+        "precedents": precedents,
+        "total_archives": _knowledge_store.archive_count,
+    }
+
+
+@app.get("/api/graphrag/patterns")
+async def get_all_patterns():
+    """Get all patterns learned from archived simulations."""
+    patterns = _knowledge_store.get_all_patterns()
+    return {
+        "total_patterns": len(patterns),
+        "patterns": patterns,
+    }

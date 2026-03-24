@@ -32,13 +32,18 @@ class Orchestrator:
     and updating the graph state.
     """
 
-    def __init__(self, config: SimulationConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: SimulationConfig | None = None,
+        graphrag_engine: Any | None = None,
+    ) -> None:
         self.config = config or SimulationConfig()
         self.registry: AgentRegistry | None = None
         self.graph: GraphStore = GraphStore()
         self.state: SimulationState | None = None
         self.event_manager: EventManager = EventManager()
         self._scope: InformationScope | None = None
+        self._graphrag = graphrag_engine  # Optional GraphRAGEngine
         self._llm: Any = None
 
     def _get_llm(self) -> Any:
@@ -184,6 +189,22 @@ class Orchestrator:
             secrecy_prompt = self._scope.get_secrecy_prompt(agent.agent_id)
             if secrecy_prompt:
                 scenario_context += f"\n\n{secrecy_prompt}"
+
+        # Add GraphRAG context (precedents, community patterns)
+        if self._graphrag and round_number == 0:
+            from graphsim.rag.extractor import build_knowledge_graph_from_state
+
+            # Only build KG context if we have messages or historical data
+            kg = build_knowledge_graph_from_state(self.state)
+            communities = self._graphrag.detect_communities(kg)
+            rag_context = self._graphrag.get_agent_context(
+                agent.agent_id,
+                kg,
+                communities.communities,
+                scenario_title=self.state.metadata.get("title", ""),
+            )
+            if rag_context:
+                scenario_context += f"\n\n{rag_context}"
 
         return AgentContext(
             round_number=round_number,
