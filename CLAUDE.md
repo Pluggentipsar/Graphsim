@@ -8,12 +8,14 @@ Graphsim is a simulation tool where multiple AI agent instances communicate with
 
 ## Architecture
 
-Four-layer architecture:
+Six-layer architecture:
 
-1. **Scenario Engine** (`src/engine/`) - Defines and manages simulation cases
-2. **Agent Layer** (`src/agents/`) - Role-based AI agents with defined responsibilities
+1. **Scenario Engine** (`src/engine/`) - Defines and manages simulation cases, templates, events
+2. **Agent Layer** (`src/agents/`) - Role-based AI agents with trait system and role library
 3. **Graph Layer** (`src/graph/`) - Relationships, information flow, reporting chains (Neo4j/NetworkX)
-4. **Analysis Layer** (`src/analysis/`) - Post-simulation analysis and insights
+4. **Analysis Layer** (`src/analysis/`) - Post-simulation analysis, export, and reporting
+5. **GraphRAG Layer** (`src/rag/`) - Knowledge extraction, community detection, cross-simulation learning
+6. **UI Layer** (`src/ui/`) - Streamlit dashboard for interactive simulation
 
 ### Key Design Principles
 
@@ -52,23 +54,48 @@ graphsim/
 │       │   ├── __init__.py
 │       │   ├── base.py        # Base agent class
 │       │   ├── registry.py    # Agent role registry
-│       │   └── roles/         # Role-specific agent configs
-│       │       └── __init__.py
+│       │   ├── traits.py      # Personality trait system (0-10 sliders)
+│       │   └── roles/
+│       │       ├── __init__.py
+│       │       └── library.py # 19 pre-built roles across 6 domains
 │       ├── graph/
 │       │   ├── __init__.py
 │       │   ├── models.py      # Graph node/edge models
 │       │   ├── store.py       # Graph storage abstraction
 │       │   └── queries.py     # Common graph queries
-│       └── analysis/
+│       ├── analysis/
+│       │   ├── __init__.py
+│       │   ├── analyzer.py    # Structured post-simulation analysis
+│       │   └── export.py      # Markdown/JSON report export
+│       ├── rag/               # GraphRAG system
+│       │   ├── __init__.py
+│       │   ├── extractor.py   # Knowledge graph extraction
+│       │   ├── communities.py # Community detection (Louvain)
+│       │   ├── store.py       # Cross-simulation knowledge store
+│       │   └── engine.py      # GraphRAG unified interface
+│       ├── api/               # FastAPI REST API
+│       │   ├── __init__.py
+│       │   ├── app.py         # All API endpoints
+│       │   └── models.py      # Request/response models
+│       └── ui/                # Streamlit dashboard
 │           ├── __init__.py
-│           └── analyzer.py    # Post-simulation analysis
+│           └── app.py         # Interactive simulation UI
 ├── scenarios/                 # YAML scenario definitions
 │   └── example_school.yaml
-├── tests/
+├── tests/                     # 105 tests
 │   ├── __init__.py
 │   ├── test_orchestrator.py
 │   ├── test_agents.py
-│   └── test_graph.py
+│   ├── test_graph.py
+│   ├── test_traits.py
+│   ├── test_roles.py
+│   ├── test_templates.py
+│   ├── test_events.py
+│   ├── test_scoping.py
+│   ├── test_export.py
+│   ├── test_api.py
+│   ├── test_graphrag.py
+│   └── test_graphrag_api.py
 └── scripts/
     └── run_simulation.py
 ```
@@ -82,6 +109,8 @@ graphsim/
 - **Lint**: `ruff check src/`
 - **Format**: `ruff format src/`
 - **Run simulation**: `python scripts/run_simulation.py --scenario scenarios/example_school.yaml`
+- **Start UI**: `streamlit run src/graphsim/ui/app.py`
+- **Start API**: `uvicorn graphsim.api.app:app --reload`
 
 ### Code Style
 - Use type hints everywhere
