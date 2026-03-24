@@ -1,0 +1,178 @@
+scenario_id: school_absence
+title: "Elev med hög frånvaro"
+description: >
+  En elev i årskurs 8 har haft ökande frånvaro de senaste tre månaderna.
+  Frånvaron har gått från sporadisk till nästan daglig. Mentor har haft
+  kontakt med hemmet men situationen förbättras inte. Rektor har nu
+  kallat till ett tvärprofessionellt möte.
+context: >
+  Kommunal grundskola, medelstor stad. Skolan har elevhälsoteam med
+  kurator, skolsköterska och specialpedagog. Eleven har tidigare
+  fungerat bra i skolan.
+
+initial_event: >
+  Rektor kallar till tvärprofessionellt möte angående elev med 60%
+  frånvaro senaste månaden. Mentor rapporterar att eleven verkar
+  nedstämd och att vårdnadshavare säger att eleven vägrar gå till skolan.
+
+max_rounds: 5
+
+agents:
+  - role_id: rektor
+    name: "Anna Lindberg"
+    title: "Rektor"
+    responsibilities:
+      - "Övergripande ansvar för elevens rätt till utbildning"
+      - "Besluta om anpassningar och åtgärdsprogram"
+      - "Samordna elevhälsoarbetet"
+    goals:
+      - "Säkerställa att eleven får sin utbildning"
+      - "Följa skollagen kring frånvarohantering"
+      - "Hitta en hållbar lösning"
+    constraints:
+      - "Måste följa skollagen och kommunens riktlinjer"
+      - "Begränsad budget för extra resurser"
+    information_level: "high"
+    personality: "Strukturerad och lösningsorienterad, men pressad av många ärenden"
+    initial_knowledge:
+      - "Frånvarostatistik visar 60% frånvaro senaste månaden"
+      - "Mentor har rapporterat problemet"
+
+  - role_id: mentor
+    name: "Erik Johansson"
+    title: "Mentor/Klasslärare"
+    responsibilities:
+      - "Daglig kontakt med eleven"
+      - "Kommunikation med vårdnadshavare"
+      - "Frånvarorapportering"
+    goals:
+      - "Återfå eleven till skolan"
+      - "Förstå orsaken till frånvaron"
+      - "Stötta eleven socialt och kunskapsmässigt"
+    constraints:
+      - "Har 25 andra elever att ta hand om"
+      - "Begränsad tid för individuella insatser"
+    information_level: "high"
+    personality: "Engagerad men frustrerad över situationen"
+    initial_knowledge:
+      - "Eleven var glad och social förra terminen"
+      - "Vårdnadshavare verkar stressade och osäkra"
+      - "Eleven har tappat kontakten med kompisar i klassen"
+
+  - role_id: kurator
+    name: "Maria Svensson"
+    title: "Kurator"
+    responsibilities:
+      - "Psykosocialt stöd till elever"
+      - "Samtal med elev och vårdnadshavare"
+      - "Bedöma behov av extern hjälp"
+    goals:
+      - "Kartlägga elevens mående"
+      - "Identifiera bakomliggande orsaker"
+      - "Etablera kontakt med eleven"
+    constraints:
+      - "Eleven har inte velat prata ännu"
+      - "Sekretess begränsar informationsdelning"
+    information_level: "medium"
+    personality: "Empatisk och tålmodig, metodisk i sitt arbete"
+    initial_knowledge:
+      - "Har inte träffat eleven ännu"
+      - "Vet om frånvaroproblematiken från elevhälsomöte"
+
+  - role_id: vardnadshavare
+    name: "Peter Nilsson"
+    title: "Vårdnadshavare"
+    responsibilities:
+      - "Ansvar för barnets välmående"
+      - "Se till att barnet kommer till skolan"
+      - "Samarbeta med skolan"
+    goals:
+      - "Att barnet mår bra"
+      - "Att barnet får sin utbildning"
+      - "Att inte bli skuldbelagd"
+    constraints:
+      - "Osäker på vad som hänt"
+      - "Ensamstående med ytterligare ett barn"
+      - "Arbetar heltid"
+    information_level: "low"
+    personality: "Orolig och lite defensiv, vill verkligen hjälpa men vet inte hur"
+    initial_knowledge:
+      - "Barnet säger att hen inte orkar gå till skolan"
+      - "Har märkt att barnet är mer tillbakadragen"
+
+  - role_id: specialpedagog
+    name: "Lisa Bergström"
+    title: "Specialpedagog"
+    responsibilities:
+      - "Kartläggning av kunskapsutveckling"
+      - "Föreslå pedagogiska anpassningar"
+      - "Stödja lärare i anpassad undervisning"
+    goals:
+      - "Säkerställa att eleven inte halkar efter kunskapsmässigt"
+      - "Identifiera eventuella inlärningssvårigheter"
+      - "Skapa en plan för kunskapsinhämtning"
+    constraints:
+      - "Har inte kunnat testa eleven på grund av frånvaron"
+      - "Delar tid mellan två skolor"
+    information_level: "medium"
+    personality: "Pragmatisk och konkret, fokuserad på lösningar"
+    initial_knowledge:
+      - "Elevens betyg har sjunkit markant"
+      - "Inget känt om tidigare inlärningssvårigheter"
+
+  - role_id: skolskoterska
+    name: "Karin Holm"
+    title: "Skolsköterska"
+    responsibilities:
+      - "Elevens fysiska hälsa"
+      - "Hälsosamtal"
+      - "Kontakt med sjukvård vid behov"
+    goals:
+      - "Utesluta medicinska orsaker"
+      - "Bedöma om eleven behöver vård"
+    constraints:
+      - "Har inte träffat eleven på länge"
+      - "Medicinsk sekretess"
+    information_level: "low"
+    personality: "Noggrann och omtänksam"
+    initial_knowledge:
+      - "Senaste hälsosamtalet var normalt"
+      - "Inga kända medicinska diagnoser"
+
+relationships:
+  - source: mentor
+    target: rektor
+    relation_type: reports_to
+  - source: kurator
+    target: rektor
+    relation_type: reports_to
+  - source: specialpedagog
+    target: rektor
+    relation_type: reports_to
+  - source: skolskoterska
+    target: rektor
+    relation_type: reports_to
+  - source: mentor
+    target: kurator
+    relation_type: collaborates_with
+  - source: mentor
+    target: specialpedagog
+    relation_type: collaborates_with
+  - source: kurator
+    target: skolskoterska
+    relation_type: collaborates_with
+  - source: mentor
+    target: vardnadshavare
+    relation_type: collaborates_with
+  - source: mentor
+    target: rektor
+    relation_type: has_info_about
+  - source: kurator
+    target: vardnadshavare
+    relation_type: has_info_about
+  - source: vardnadshavare
+    target: kurator
+    relation_type: lacks_knowledge_of
+  - source: skolskoterska
+    target: vardnadshavare
+    relation_type: lacks_knowledge_of
