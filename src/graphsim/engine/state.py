@@ -44,6 +44,7 @@ class SimulationState(BaseModel):
     pending_actions: list[dict[str, Any]] = Field(default_factory=list)
     finished: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
+    document_context: dict[str, str] = Field(default_factory=dict)  # agent_id -> perspective
 
     def messages_visible_to(self, agent_id: str) -> list[AgentMessage]:
         """Return messages that a specific agent is allowed to see."""

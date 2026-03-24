@@ -206,6 +206,13 @@ class Orchestrator:
             if rag_context:
                 scenario_context += f"\n\n{rag_context}"
 
+        # Add document context (role-specific perspective of uploaded documents)
+        if self.state.document_context and agent.agent_id in self.state.document_context:
+            doc_perspective = self.state.document_context[agent.agent_id]
+            scenario_context += (
+                f"\n\nDokumentunderlag (din bild av dokumentet):\n{doc_perspective}"
+            )
+
         return AgentContext(
             round_number=round_number,
             visible_messages=visible_messages,

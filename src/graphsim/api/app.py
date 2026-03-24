@@ -50,6 +50,9 @@ from graphsim.engine.templates import (
 from graphsim.orchestrator import Orchestrator
 from graphsim.rag.engine import GraphRAGEngine
 from graphsim.rag.extractor import build_knowledge_graph_from_state
+from graphsim.documents.analyzer import DocumentAnalyzer
+from graphsim.documents.reader import read_document
+from graphsim.documents.scenario_builder import DocumentScenarioBuilder
 from graphsim.rag.store import KnowledgeStore
 
 # Shared GraphRAG engine and knowledge store
@@ -789,3 +792,88 @@ async def get_all_patterns():
         "total_patterns": len(patterns),
         "patterns": patterns,
     }
+
+
+# ============================================================================
+# Document Endpoints
+# ============================================================================
+
+@app.post("/api/documents/analyze")
+async def analyze_document(
+    file: Any = None,
+    file_path: str | None = None,
+):
+    """Analyze an uploaded document and extract structured information."""
+    from fastapi import File, UploadFile
+
+    # This endpoint works with file_path for simplicity
+    if not file_path:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide file_path to the document",
+        )
+
+    try:
+        doc = read_document(file_path=file_path)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read document: {str(e)}")
+
+    config = SimulationConfig()
+    orchestrator = Orchestrator(config)
+    llm = orchestrator._get_llm()
+    analyzer = DocumentAnalyzer(llm)
+
+    try:
+        analysis = await analyzer.analyze(doc)
+        return {
+            "document": {
+                "filename": doc.filename,
+                "file_type": doc.file_type,
+                "word_count": doc.word_count,
+                "num_pages": doc.num_pages,
+            },
+            "analysis": analysis.model_dump(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+@app.post("/api/documents/build-scenario")
+async def build_scenario_from_document(
+    file_path: str,
+    num_rounds: int = 5,
+    custom_instructions: str = "",
+):
+    """Analyze a document and generate a complete simulation scenario from it."""
+    try:
+        doc = read_document(file_path=file_path)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read document: {str(e)}")
+
+    config = SimulationConfig()
+    orchestrator = Orchestrator(config)
+    llm = orchestrator._get_llm()
+
+    analyzer = DocumentAnalyzer(llm)
+    builder = DocumentScenarioBuilder(llm)
+
+    try:
+        analysis = await analyzer.analyze(doc)
+        scenario, events = await builder.build_scenario(
+            document=doc,
+            analysis=analysis,
+            num_rounds=num_rounds,
+            custom_instructions=custom_instructions,
+        )
+
+        return {
+            "document": {
+                "filename": doc.filename,
+                "word_count": doc.word_count,
+            },
+            "analysis": analysis.model_dump(),
+            "scenario": scenario.model_dump(),
+            "events": [e.model_dump() for e in events],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Scenario generation failed: {str(e)}")

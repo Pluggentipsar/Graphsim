@@ -30,6 +30,9 @@ from graphsim.engine.templates import (
     get_template,
 )
 from graphsim.orchestrator import Orchestrator
+from graphsim.documents.analyzer import DocumentAnalyzer
+from graphsim.documents.reader import DocumentContent, read_document
+from graphsim.documents.scenario_builder import DocumentScenarioBuilder
 from graphsim.rag.communities import CommunityDetector
 from graphsim.rag.engine import GraphRAGEngine
 from graphsim.rag.extractor import build_knowledge_graph_from_state
@@ -69,6 +72,10 @@ def init_session_state() -> None:
         st.session_state.analysis_result = None
     if "trait_overrides" not in st.session_state:
         st.session_state.trait_overrides = {}
+    if "uploaded_document" not in st.session_state:
+        st.session_state.uploaded_document = None
+    if "document_analysis" not in st.session_state:
+        st.session_state.document_analysis = None
 
 
 init_session_state()
@@ -124,8 +131,8 @@ def render_sidebar() -> str:
 def render_setup() -> None:
     st.header("Välj scenario")
 
-    tab_template, tab_describe, tab_yaml = st.tabs([
-        "Välj mall", "Beskriv med text", "Ladda YAML"
+    tab_template, tab_document, tab_describe, tab_yaml = st.tabs([
+        "Välj mall", "Ladda dokument", "Beskriv med text", "Ladda YAML"
     ])
 
     # --- Tab 1: Templates ---
@@ -174,7 +181,146 @@ def render_setup() -> None:
                     if st.button("Välj", key=f"select_{template.template_id}", use_container_width=True):
                         _load_template(template.template_id)
 
-    # --- Tab 2: Natural language ---
+    # --- Tab 2: Upload document ---
+    with tab_document:
+        st.subheader("Simulera utifrån dokument")
+        st.write(
+            "Ladda upp en reform, policy, politiskt beslut eller rapport. "
+            "AI:n analyserar dokumentet, identifierar berörda roller och "
+            "skapar ett scenario där rollerna reagerar på innehållet."
+        )
+
+        uploaded_file = st.file_uploader(
+            "Ladda upp dokument",
+            type=["pdf", "docx", "doc", "txt", "md"],
+            key="doc_upload",
+        )
+
+        if uploaded_file:
+            # Read document
+            file_bytes = uploaded_file.read()
+            try:
+                doc = read_document(
+                    file_bytes=file_bytes, filename=uploaded_file.name
+                )
+                st.session_state.uploaded_document = doc
+                st.success(
+                    f"Laddat: **{doc.filename}** ({doc.word_count} ord"
+                    f"{f', {doc.num_pages} sidor' if doc.num_pages else ''})"
+                )
+
+                with st.expander("Förhandsgranska dokument"):
+                    st.text(doc.preview)
+
+            except Exception as e:
+                st.error(f"Kunde inte läsa dokumentet: {e}")
+
+        # Document analysis
+        if st.session_state.uploaded_document:
+            doc = st.session_state.uploaded_document
+
+            st.divider()
+
+            col_opts1, col_opts2 = st.columns(2)
+            with col_opts1:
+                doc_rounds = st.slider("Antal rundor", 3, 10, 5, key="doc_rounds")
+            with col_opts2:
+                custom_focus = st.text_input(
+                    "Fokusområde (valfritt)",
+                    placeholder="T.ex: Fokusera på konflikten mellan fack och ledning",
+                    key="doc_focus",
+                )
+
+            # Two-step process: Analyze then Generate
+            if not st.session_state.document_analysis:
+                if st.button("Analysera dokument", type="primary"):
+                    with st.spinner("Analyserar dokumentet med AI..."):
+                        try:
+                            config = SimulationConfig()
+                            orch = Orchestrator(config)
+                            llm = orch._get_llm()
+                            analyzer = DocumentAnalyzer(llm)
+                            analysis = _run_async(analyzer.analyze(doc))
+                            st.session_state.document_analysis = analysis
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Analys misslyckades: {e}")
+            else:
+                analysis = st.session_state.document_analysis
+
+                st.subheader(f"Dokumentanalys: {analysis.title}")
+                st.write(f"**Typ:** {analysis.document_type}")
+                st.write(f"**Sammanfattning:** {analysis.summary}")
+
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if analysis.key_points:
+                        st.write("**Nyckelpunkter:**")
+                        for point in analysis.key_points:
+                            st.write(f"- {point}")
+
+                    if analysis.decisions_made:
+                        st.write("**Beslut:**")
+                        for dec in analysis.decisions_made:
+                            st.write(f"- {dec}")
+
+                with col_b:
+                    if analysis.affected_groups:
+                        st.write("**Berörda grupper:**")
+                        for group in analysis.affected_groups:
+                            st.write(f"- {group}")
+
+                    if analysis.risks_identified:
+                        st.write("**Risker:**")
+                        for risk in analysis.risks_identified:
+                            st.warning(risk)
+
+                if analysis.stakeholders:
+                    st.write("**Identifierade roller:**")
+                    for s in analysis.stakeholders:
+                        stance_icon = {
+                            "positive": "👍", "negative": "👎",
+                            "neutral": "😐", "mixed": "🤷",
+                        }.get(s.likely_stance, "❓")
+                        st.write(
+                            f"- {stance_icon} **{s.role}** ({s.likely_stance}): "
+                            f"{s.perspective}"
+                        )
+
+                if analysis.simulation_hooks:
+                    st.write("**Intressanta konflikter att simulera:**")
+                    for hook in analysis.simulation_hooks:
+                        st.info(hook)
+
+                st.divider()
+
+                if st.button("Generera scenario från dokument", type="primary"):
+                    with st.spinner("Genererar simuleringscenario..."):
+                        try:
+                            config = SimulationConfig()
+                            orch = Orchestrator(config)
+                            llm = orch._get_llm()
+                            builder = DocumentScenarioBuilder(llm)
+                            scenario, events = _run_async(
+                                builder.build_scenario(
+                                    document=doc,
+                                    analysis=analysis,
+                                    num_rounds=doc_rounds,
+                                    custom_instructions=custom_focus,
+                                )
+                            )
+                            st.session_state.scenario_config = scenario
+                            st.session_state.template_events = events
+                            # Store document for agent context
+                            st.session_state.doc_for_context = doc
+                            st.session_state.doc_analysis_for_context = analysis
+                            st.session_state.current_step = "configure"
+                            st.success(f"Scenario skapat: {scenario.title}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Kunde inte generera scenario: {e}")
+
+    # --- Tab 3: Natural language ---
     with tab_describe:
         st.subheader("Beskriv ditt scenario")
         st.write("Skriv en beskrivning av situationen du vill simulera. "
@@ -401,6 +547,48 @@ def _start_simulation(scenario: ScenarioConfig, max_rounds: int) -> None:
     # Schedule template events if any
     if hasattr(st.session_state, "template_events") and st.session_state.template_events:
         orchestrator.schedule_events(st.session_state.template_events)
+
+    # Add document context if a document was uploaded
+    if st.session_state.get("doc_for_context") and st.session_state.get("doc_analysis_for_context"):
+        doc = st.session_state.doc_for_context
+        analysis = st.session_state.doc_analysis_for_context
+
+        # Generate role-specific document perspectives
+        # For now, give each agent a perspective based on their info level and the analysis
+        for agent in scenario.agents:
+            # Find matching stakeholder from analysis
+            matching = None
+            for s in analysis.stakeholders:
+                if s.role.lower() in agent.title.lower() or agent.title.lower() in s.role.lower():
+                    matching = s
+                    break
+
+            if matching:
+                perspective = (
+                    f"Du har tagit del av dokumentet '{analysis.title}'. "
+                    f"Din bild: {matching.perspective}. "
+                    f"Dina huvudsakliga farhågor: {', '.join(matching.key_concerns)}."
+                )
+            else:
+                # Generic perspective based on info level
+                if agent.information_level == "high":
+                    perspective = (
+                        f"Du har läst dokumentet '{analysis.title}' i sin helhet. "
+                        f"Sammanfattning: {analysis.summary}"
+                    )
+                elif agent.information_level == "medium":
+                    perspective = (
+                        f"Du har hört talas om '{analysis.title}'. "
+                        f"Du vet att det handlar om: "
+                        f"{', '.join(analysis.key_points[:3])}."
+                    )
+                else:
+                    perspective = (
+                        f"Du har hört rykten om '{analysis.title}' "
+                        f"men har inte läst det själv."
+                    )
+
+            orchestrator.state.document_context[agent.role_id] = perspective
 
     st.session_state.orchestrator = orchestrator
     st.session_state.current_step = "simulate"
